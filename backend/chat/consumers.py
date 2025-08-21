@@ -32,33 +32,42 @@ class ChatConsumer(AsyncWebsocketConsumer):
             return
 
         data = json.loads(text_data)
-        message = data.get('message')
+        action = data.get('action')  # new field to distinguish signaling/chat
         username = data.get('username')
-        print(f"Received message from username: {username}")
 
-        if not message or not username:
-            logger.warning(f"Missing message or username in data: {data}")
-            return
-
-        try:
+        if action == "chat":
+            message = data.get('message')
+            if not message or not username:
+                logger.warning(f"Missing message or username in data: {data}")
+                return
             await self.save_message(username, self.room_id, message)
-        except ObjectDoesNotExist as e:
-            logger.error(f"ObjectDoesNotExist: {e}")
-            await self.close()
-            return
-        except Exception as e:
-            logger.error(f"Unexpected error in save_message: {e}")
-            await self.close()
-            return
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    'type': 'chat_message',
+                    'message': message,
+                    'username': username,
+                }
+            )
 
-        await self.channel_layer.group_send(
-            self.room_group_name,
-            {
-                'type': 'chat_message',  # This calls self.chat_message
-                'message': message,
-                'username': username,
-            }
-        )
+        elif action in ["offer", "answer", "ice-candidate"]:
+            # forward signaling messages to other peers in the same room
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    'type': 'signal_message',
+                    'action': action,
+                    'data': data.get('data'),
+                    'username': username,
+                }
+            )
+
+    async def signal_message(self, event):
+        await self.send(text_data=json.dumps({
+            'action': event['action'],
+            'data': event['data'],
+            'username': event['username'],
+        }))
 
     async def chat_message(self, event):
         # This sends the message to the WebSocket client
